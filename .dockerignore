@@ -1,0 +1,7 @@
+.git
+.env
+.playwright-cli
+output
+**/__pycache__
+**/*.pyc
+

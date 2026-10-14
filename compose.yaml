@@ -1,0 +1,80 @@
+name: emcode-phase1
+
+services:
+  postgis:
+    image: postgis/postgis:16-3.5
+    platform: linux/amd64
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-emcode}
+      POSTGRES_USER: ${POSTGRES_USER:-emcode}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-emcode_local_only}
+      TZ: UTC
+      PGTZ: UTC
+    volumes:
+      - postgis_data:/var/lib/postgresql/data
+      - ./sql:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
+
+  superset:
+    build:
+      context: .
+      dockerfile: superset/Dockerfile
+    environment:
+      SUPERSET_CONFIG_PATH: /app/superset_config.py
+      SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY:-emcode-phase1-local-secret-change-me-9d8f27a6c4b13e50}
+      SUPERSET_ADMIN_USERNAME: ${SUPERSET_ADMIN_USERNAME:-admin}
+      SUPERSET_ADMIN_PASSWORD: ${SUPERSET_ADMIN_PASSWORD:-admin}
+      SUPERSET_ADMIN_EMAIL: ${SUPERSET_ADMIN_EMAIL:-admin@emcode.local}
+      SCARF_ANALYTICS: "false"
+      POSTGRES_DB: ${POSTGRES_DB:-emcode}
+      POSTGRES_USER: ${POSTGRES_USER:-emcode}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-emcode_local_only}
+      PYTHONPATH: /app/emcode
+    depends_on:
+      postgis:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8088:8088"
+    volumes:
+      - superset_home:/app/superset_home
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8088/health', timeout=5)"]
+      interval: 10s
+      timeout: 8s
+      retries: 30
+      start_period: 60s
+    restart: unless-stopped
+
+  simulator:
+    build:
+      context: .
+      dockerfile: simulator/Dockerfile
+    environment:
+      POSTGRES_HOST: postgis
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-emcode}
+      POSTGRES_USER: ${POSTGRES_USER:-emcode}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-emcode_local_only}
+      SUPERSET_URL: http://superset:8088
+      SUPERSET_ADMIN_USERNAME: ${SUPERSET_ADMIN_USERNAME:-admin}
+      SUPERSET_ADMIN_PASSWORD: ${SUPERSET_ADMIN_PASSWORD:-admin}
+      STREAM_INTERVAL_SECONDS: ${STREAM_INTERVAL_SECONDS:-3}
+      STREAM_VEHICLE_MIN: ${STREAM_VEHICLE_MIN:-5}
+      STREAM_VEHICLE_MAX: ${STREAM_VEHICLE_MAX:-10}
+      STREAM_CAMERA_MIN: ${STREAM_CAMERA_MIN:-1}
+      STREAM_CAMERA_MAX: ${STREAM_CAMERA_MAX:-3}
+      PYTHONUNBUFFERED: 1
+    depends_on:
+      postgis:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  postgis_data:
+  superset_home:
+
