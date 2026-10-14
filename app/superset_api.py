@@ -3,6 +3,7 @@ from __future__ import annotations
 import http.cookiejar
 import json
 import os
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -29,13 +30,19 @@ class SupersetAPI:
         request = urllib.request.Request(
             f"{self.base_url}{path}", data=data, headers=headers, method=method.upper()
         )
-        try:
-            with self.opener.open(request, timeout=60) as response:
-                body = response.read()
-                return response.status, json.loads(body) if body else None
-        except urllib.error.HTTPError as exc:
-            body = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"Superset {method} {path} returned HTTP {exc.code}: {body}") from exc
+        for attempt in range(5):
+            try:
+                with self.opener.open(request, timeout=60) as response:
+                    body = response.read()
+                    return response.status, json.loads(body) if body else None
+            except urllib.error.HTTPError as exc:
+                body = exc.read().decode("utf-8", errors="replace")
+                if exc.code == 429 and attempt < 4:
+                    # Superset 6.x applies a process-local 50 req/s limit. A
+                    # single full-window wait lets idempotent bootstrap proceed.
+                    time.sleep(1.05)
+                    continue
+                raise RuntimeError(f"Superset {method} {path} returned HTTP {exc.code}: {body}") from exc
 
     def login(self) -> None:
         username = os.getenv("SUPERSET_ADMIN_USERNAME", "admin")

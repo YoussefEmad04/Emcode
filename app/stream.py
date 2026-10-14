@@ -11,7 +11,7 @@ from psycopg2.extras import execute_values
 
 from app.db import connect_with_retry
 from app.seed import ZONES, _point_in_zone, _synthetic_speed, initialize_schema, seed_batch
-from app.ml import train_and_score
+from app.ml import infer_live, load_models, record_inference_error, train_and_score
 
 RUNNING = True
 
@@ -118,15 +118,35 @@ def main() -> None:
     connection = connect_with_retry()
     rng = random.Random()
     try:
-        initialize_schema(connection)
-        inserted_vehicles, inserted_cameras = seed_batch(connection)
-        print(
-            f"Initialization complete; deterministic batch rows inserted or refreshed this run: "
-            f"vehicles={inserted_vehicles}, cameras={inserted_cameras}",
-            flush=True,
-        )
-        train_and_score(connection)
+        # Serialize DDL/model initialization with Superset asset provisioning.
+        # Both use the same session lock to prevent concurrent view replacement
+        # and Superset dataset introspection during container restarts.
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT pg_advisory_lock(454002)")
+        try:
+            initialize_schema(connection)
+            inserted_vehicles, inserted_cameras = seed_batch(connection)
+            print(
+                f"Initialization complete; deterministic batch rows inserted or refreshed this run: "
+                f"vehicles={inserted_vehicles}, cameras={inserted_cameras}",
+                flush=True,
+            )
+            try:
+                artifact = load_models()
+                if os.getenv("ML_RETRAIN_ON_START", "0").lower() in {"1", "true", "yes"}:
+                    artifact = train_and_score(connection)
+                else:
+                    print(f"Loaded persisted ML artifacts: {artifact['version']}", flush=True)
+            except (FileNotFoundError, RuntimeError, ValueError) as exc:
+                print(f"Persisted model unavailable/incompatible; training now: {exc}", flush=True)
+                artifact = train_and_score(connection)
+        finally:
+            connection.rollback()
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT pg_advisory_unlock(454002)")
+            connection.commit()
         vehicle_state = load_vehicle_state(connection, rng)
+        next_inference = time.monotonic()
         while RUNNING:
             vehicle_count = rng.randint(vehicle_min, vehicle_max)
             camera_count = rng.randint(camera_min, camera_max)
@@ -142,6 +162,21 @@ def main() -> None:
             except Exception as exc:
                 connection.rollback()
                 print(f"Stream insert failed: {type(exc).__name__}: {exc}", flush=True)
+                try:
+                    if connection.closed:
+                        connection = connect_with_retry()
+                except Exception as reconnect_exc:
+                    print(f"Database reconnect failed: {type(reconnect_exc).__name__}: {reconnect_exc}", flush=True)
+            if time.monotonic() >= next_inference:
+                try:
+                    if connection.closed:
+                        connection = connect_with_retry()
+                    infer_live(connection, artifact)
+                except Exception as exc:
+                    connection.rollback()
+                    record_inference_error(connection, exc)
+                    print(f"Live ML inference failed: {type(exc).__name__}: {exc}", flush=True)
+                next_inference = time.monotonic() + 60
             deadline = time.monotonic() + interval
             while RUNNING and time.monotonic() < deadline:
                 time.sleep(min(0.25, deadline - time.monotonic()))

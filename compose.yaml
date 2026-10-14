@@ -68,13 +68,18 @@ services:
       STREAM_VEHICLE_MAX: ${STREAM_VEHICLE_MAX:-10}
       STREAM_CAMERA_MIN: ${STREAM_CAMERA_MIN:-1}
       STREAM_CAMERA_MAX: ${STREAM_CAMERA_MAX:-3}
+      MODEL_DIR: /models
+      ML_RETRAIN_ON_START: ${ML_RETRAIN_ON_START:-0}
       PYTHONUNBUFFERED: 1
     depends_on:
       postgis:
         condition: service_healthy
     restart: unless-stopped
+    volumes:
+      - simulator_models:/models
 
 volumes:
   postgis_data:
   superset_home:
+  simulator_models:
 

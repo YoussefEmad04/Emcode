@@ -63,3 +63,54 @@ CREATE TABLE IF NOT EXISTS ml_model_metadata (
     trained_at timestamptz NOT NULL DEFAULT now(),
     metrics_json text NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS ml_live_predictions (
+    zone_id smallint NOT NULL REFERENCES geo_zones(zone_id),
+    prediction_time timestamptz NOT NULL,
+    feature_window_start timestamptz NOT NULL,
+    feature_window_end timestamptz NOT NULL,
+    target_start timestamptz NOT NULL,
+    target_end timestamptz NOT NULL,
+    congestion_probability double precision CHECK (congestion_probability BETWEEN 0 AND 1),
+    predicted_congested boolean,
+    current_avg_speed_kph double precision,
+    predicted_avg_speed_kph double precision,
+    predicted_speed_change_pct double precision,
+    classifier_version text NOT NULL,
+    regressor_version text NOT NULL,
+    prediction_status text NOT NULL CHECK (prediction_status IN ('ok','insufficient_data','error')),
+    error_message text,
+    gps_record_count integer NOT NULL DEFAULT 0,
+    camera_event_count integer NOT NULL DEFAULT 0,
+    PRIMARY KEY(zone_id,prediction_time),
+    CHECK (feature_window_end >= feature_window_start),
+    CHECK (target_end > target_start)
+);
+ALTER TABLE ml_live_predictions ADD COLUMN IF NOT EXISTS error_message text;
+CREATE INDEX IF NOT EXISTS ml_live_predictions_time_idx ON ml_live_predictions(prediction_time DESC);
+
+CREATE TABLE IF NOT EXISTS ml_inference_runs (
+    prediction_time timestamptz PRIMARY KEY,
+    feature_window_start timestamptz NOT NULL,
+    target_end timestamptz NOT NULL,
+    status text NOT NULL,
+    prediction_count integer NOT NULL DEFAULT 0,
+    successful_zone_count integer NOT NULL DEFAULT 0,
+    insufficient_zone_count integer NOT NULL DEFAULT 0,
+    failed_zone_count integer NOT NULL DEFAULT 0,
+    error_message text,
+    completed_at timestamptz
+);
+ALTER TABLE ml_inference_runs ADD COLUMN IF NOT EXISTS failed_zone_count integer NOT NULL DEFAULT 0;
+
+CREATE TABLE IF NOT EXISTS ml_regression_holdout (
+    id bigserial PRIMARY KEY,
+    zone_id smallint NOT NULL REFERENCES geo_zones(zone_id),
+    observation_time timestamptz NOT NULL,
+    target_start timestamptz NOT NULL,
+    target_end timestamptz NOT NULL,
+    actual_avg_speed_kph double precision NOT NULL,
+    predicted_avg_speed_kph double precision NOT NULL,
+    persistence_avg_speed_kph double precision NOT NULL,
+    model_version text NOT NULL
+);
