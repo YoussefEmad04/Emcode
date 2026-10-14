@@ -63,6 +63,11 @@ def verify_database(result: Verification) -> None:
                    FROM camera_events"""
             )
             batch_cameras, stream_cameras = cursor.fetchone()
+            cursor.execute("SELECT count(*) FROM ml_congestion_predictions WHERE forecast_kind = 'forecast'")
+            result.check("Synthetic ML forecast zones", cursor.fetchone()[0] == 5, "Five zone predictions")
+            cursor.execute("SELECT metrics_json FROM ml_model_metadata ORDER BY trained_at DESC LIMIT 1")
+            row = cursor.fetchone()
+            result.check("Chronological holdout metrics", bool(row and row[0]), "Stored model diagnostics")
             result.check(
                 "Batch row counts",
                 batch_vehicles >= BATCH_VEHICLE_ROWS and batch_cameras >= BATCH_CAMERA_ROWS,
@@ -229,6 +234,9 @@ def verify_superset(result: Verification) -> None:
     )
 
     expected_datasets = {
+        "v_batch_hourly_zone_activity",
+        "v_ml_congestion_forecast",
+        "v_ml_congestion_holdout",
         "v_batch_vehicle_activity",
         "v_batch_camera_activity",
         "v_batch_daily_zone_activity",
@@ -244,7 +252,7 @@ def verify_superset(result: Verification) -> None:
         f"found={sorted(expected_datasets & actual_datasets)}",
     )
 
-    expected_dashboards = {"EMCODE | Historical Batch", "EMCODE | Live Monitoring"}
+    expected_dashboards = {"EMCODE | Historical Batch", "EMCODE | Live Monitoring", "EMCODE | Congestion Diagnostics"}
     dashboards = api.list_all("dashboard")
     dashboard_titles = {row.get("dashboard_title") for row in dashboards}
     result.check(
@@ -260,7 +268,7 @@ def verify_superset(result: Verification) -> None:
         "Monitored Zones",
         "Daily GPS Records",
         "GPS Records by Zone",
-        "GPS Activity Clusters",
+        "Historical GPS Activity Map",
         "GPS vs Camera Records by Zone",
     }
     expected_live = {
@@ -270,7 +278,8 @@ def verify_superset(result: Verification) -> None:
         "Live | Camera Events by Zone",
         "Live | Zone Vehicle and Camera Activity",
     }
-    expected_charts = expected_historical | expected_live
+    expected_ml = {"Next-hour Congestion Risk by Zone", "Hourly Average Speed by Zone", "Test-set Predictions vs Proxy Labels by Zone"}
+    expected_charts = expected_historical | expected_live | expected_ml
     charts = api.list_all("chart")
     emcode_charts = [chart for chart in charts if chart.get("slice_name") in expected_charts]
     result.check(
@@ -329,7 +338,7 @@ def verify_superset(result: Verification) -> None:
                 spatial.get("latCol") == "latitude" and spatial.get("lonCol") == "longitude",
                 f"spatial={spatial}",
             )
-            if chart.get("slice_name") == "GPS Activity Clusters":
+            if chart.get("slice_name") == "Historical GPS Activity Map":
                 radius = params.get("point_radius_fixed", {})
                 result.check(
                     "Historical map uses aggregated activity clusters",

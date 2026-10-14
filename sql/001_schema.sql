@@ -41,3 +41,25 @@ CREATE INDEX IF NOT EXISTS camera_events_geom_gix ON camera_events USING gist (g
 CREATE INDEX IF NOT EXISTS camera_events_event_time_idx ON camera_events (event_time DESC);
 CREATE INDEX IF NOT EXISTS camera_events_mode_time_idx ON camera_events (ingestion_mode, event_time DESC);
 
+
+-- Lightweight ML result storage. Predictions use synthetic historical data only.
+CREATE TABLE IF NOT EXISTS ml_congestion_predictions (
+    forecast_kind text NOT NULL CHECK (forecast_kind IN ('holdout','forecast')),
+    zone_id smallint NOT NULL REFERENCES geo_zones(zone_id),
+    feature_hour timestamptz NOT NULL,
+    target_hour timestamptz NOT NULL,
+    congestion_probability double precision NOT NULL CHECK (congestion_probability BETWEEN 0 AND 1),
+    predicted_congestion boolean NOT NULL,
+    actual_congestion boolean,
+    gps_record_count bigint NOT NULL,
+    camera_event_count bigint NOT NULL,
+    avg_speed_kph double precision NOT NULL,
+    model_version text NOT NULL,
+    PRIMARY KEY (forecast_kind, zone_id, feature_hour)
+);
+
+CREATE TABLE IF NOT EXISTS ml_model_metadata (
+    model_version text PRIMARY KEY,
+    trained_at timestamptz NOT NULL DEFAULT now(),
+    metrics_json text NOT NULL
+);
