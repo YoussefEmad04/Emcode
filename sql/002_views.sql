@@ -64,23 +64,70 @@ FULL OUTER JOIN camera_daily c
   ON c.event_time = g.event_time
  AND c.zone_id = g.zone_id;
 
+-- Per-day aggregate at each demo zone centroid. Superset combines dates
+-- after applying dashboard filters: five readable proportional markers.
 CREATE OR REPLACE VIEW v_batch_spatial_activity AS
 SELECT
     date_trunc('day', p.event_time) AS event_time,
     z.zone_id,
     z.zone_name,
-    avg(ST_Y(p.geom))::double precision AS latitude,
-    avg(ST_X(p.geom))::double precision AS longitude,
+    ST_Y(ST_Centroid(z.geom))::double precision AS latitude,
+    ST_X(ST_Centroid(z.geom))::double precision AS longitude,
     count(*)::bigint AS gps_record_count
 FROM vehicle_positions p
 JOIN geo_zones z ON ST_Contains(z.geom, p.geom)
-WHERE p.ingestion_mode = 'batch'
-GROUP BY
-    date_trunc('day', p.event_time),
-    z.zone_id,
-    z.zone_name,
-    floor(ST_X(p.geom) * 250),
-    floor(ST_Y(p.geom) * 250);
+WHERE p.ingestion_mode='batch'
+GROUP BY date_trunc('day', p.event_time), z.zone_id, z.zone_name, z.geom;
+
+-- One row for each zone/hour, built without multiplying GPS/camera rows.
+CREATE OR REPLACE VIEW v_batch_hourly_zone_activity AS
+WITH gps AS (
+    SELECT
+        date_trunc('hour', p.event_time) AS event_time,
+        z.zone_id,
+        z.zone_name,
+        count(*)::bigint AS gps_record_count,
+        avg(p.speed_kph)::double precision AS avg_speed_kph,
+        avg(CASE WHEN p.speed_kph < 30 THEN 1.0 ELSE 0.0 END)::double precision AS slow_fraction
+    FROM vehicle_positions p
+    JOIN geo_zones z ON ST_Contains(z.geom, p.geom)
+    WHERE p.ingestion_mode='batch'
+    GROUP BY date_trunc('hour', p.event_time), z.zone_id, z.zone_name
+),
+camera AS (
+    SELECT date_trunc('hour', e.event_time) AS event_time,
+           z.zone_id, count(*)::bigint AS camera_event_count
+    FROM camera_events e
+    JOIN geo_zones z ON ST_Contains(z.geom, e.geom)
+    WHERE e.ingestion_mode='batch'
+    GROUP BY date_trunc('hour', e.event_time), z.zone_id
+)
+SELECT
+    g.*,
+    coalesce(c.camera_event_count, 0)::bigint AS camera_event_count,
+    extract(hour FROM g.event_time AT TIME ZONE 'Asia/Dubai')::integer AS local_hour,
+    extract(isodow FROM g.event_time AT TIME ZONE 'Asia/Dubai')::integer AS local_weekday
+FROM gps g
+LEFT JOIN camera c ON c.event_time=g.event_time AND c.zone_id=g.zone_id;
+
+CREATE OR REPLACE VIEW v_ml_congestion_forecast AS
+SELECT p.target_hour AS event_time, p.feature_hour, p.zone_id, z.zone_name,
+       p.congestion_probability * 100 AS congestion_risk_pct,
+       p.predicted_congestion, p.gps_record_count,
+       p.camera_event_count, p.avg_speed_kph, p.model_version
+FROM ml_congestion_predictions p
+JOIN geo_zones z ON z.zone_id=p.zone_id
+WHERE p.forecast_kind='forecast';
+
+CREATE OR REPLACE VIEW v_ml_congestion_holdout AS
+SELECT p.target_hour AS event_time, p.feature_hour, p.zone_id, z.zone_name,
+       p.congestion_probability * 100 AS congestion_risk_pct,
+       CASE WHEN p.predicted_congestion THEN 1 ELSE 0 END AS predicted_congested,
+       CASE WHEN p.actual_congestion THEN 1 ELSE 0 END AS observed_congested,
+       p.model_version
+FROM ml_congestion_predictions p
+JOIN geo_zones z ON z.zone_id=p.zone_id
+WHERE p.forecast_kind='holdout';
 
 CREATE OR REPLACE VIEW v_live_vehicle_latest AS
 SELECT event_id, vehicle_id, event_time, ingestion_time, ingestion_mode,
@@ -102,7 +149,7 @@ FROM (
     JOIN geo_zones z ON ST_Contains(z.geom, p.geom)
     WHERE p.ingestion_mode = 'stream'
 ) ranked
-WHERE rn = 1;
+WHERE rn = 1 AND event_time >= now() - interval '10 minutes';
 
 CREATE OR REPLACE VIEW v_live_events_recent AS
 SELECT

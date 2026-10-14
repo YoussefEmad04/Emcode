@@ -8,10 +8,10 @@ from psycopg2.extras import execute_values
 
 from app.db import connect_with_retry
 
-BATCH_VEHICLE_ROWS = 20_000
-BATCH_CAMERA_ROWS = 2_000
+BATCH_VEHICLE_ROWS = 40_000
+BATCH_CAMERA_ROWS = 4_000
 RANDOM_SEED = 20261013
-BATCH_SEED_VERSION = "phase1-historical-dashboard-v2"
+BATCH_SEED_VERSION = "phase1-congestion-insights-v3"
 
 # Intentionally artificial weights create an easy-to-read demo pattern. They do
 # not model real Dubai traffic or camera activity.
@@ -65,6 +65,19 @@ def _weighted_event_time(
         seconds=rng.randrange(60),
     )
 
+
+
+def _synthetic_speed(rng: random.Random, zone_id: int, event_time: datetime) -> float:
+    """Synthetic rush-hour signal, NOT a measured or validated traffic model."""
+    import math
+
+    local_hour = (event_time.hour + 4) % 24  # Dubai timezone (UTC+4)
+    morning = math.exp(-0.5 * ((local_hour - 8) / 1.9) ** 2)
+    evening = math.exp(-0.5 * ((local_hour - 18) / 2.1) ** 2)
+    rush = max(morning, evening)
+    zone_factor = {1: 1.18, 2: 1.28, 3: 0.93, 4: 0.76, 5: 0.64}[zone_id]
+    speed = 87 - 55 * rush * zone_factor + rng.gauss(0, 11)
+    return round(max(7.0, min(110.0, speed)), 2)
 
 def initialize_schema(connection) -> None:
     with connection.cursor() as cursor:
@@ -131,7 +144,7 @@ def seed_batch(connection) -> tuple[int, int]:
                     event_time,
                     anchor,
                     "batch",
-                    round(rng.uniform(0, 115), 2),
+                    _synthetic_speed(rng, zone[0], event_time),
                     longitude,
                     latitude,
                 )
