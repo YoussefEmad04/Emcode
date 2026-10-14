@@ -175,3 +175,22 @@ docker compose up -d --build
 - The zone/time comparison is an aggregate correlation only. It intentionally makes no claim that a camera event identifies or matches a vehicle.
 - There is no alerting, prediction, What-if Analysis, Kafka, Airflow, Redis, Celery, separate API/frontend, cloud service, or real EMCODE/customer data.
 
+
+## Phase 1 extension: synthetic congestion diagnostics
+
+This branch adds a **demonstration-only** classification model, not a genuine traffic forecasting service. The proxy target is next-hour synthetic mean speed <43 km/h with at least 5 GPS records. Random Forest trains on current-hour counts, camera activity, speed, slow fraction, time and zone. No next-hour features are used for prediction. It uses a chronological 65/17/18 train/validation/test split. Test metrics are stored in `ml_model_metadata`. Do not interpret metrics as performance on real EMCODE data.
+
+- Batch data: **40,000 GPS records** and **4,000 camera events**.
+- Live updates are bounded gradual movements in synthetic zones, not real road routing; live points >10 minutes old are excluded.
+- Historical map is a proportional **zone-level activity map** (not ML clustering or a heatmap).
+- Open [EMCODE | Congestion Diagnostics](http://localhost:8088/superset/dashboard/emcode-congestion-diagnostics/) for three focused report charts: zone risk, hourly mean speed, and held-out predictions versus proxy labels.
+- The model retrains at **simulator startup**; its latest forecast is tied to historical synthetic data, **not the current live stream**. Display that limitation whenever demonstrating it.
+
+Rebuild and check:
+```bash
+docker compose up -d --build
+docker compose exec simulator python -m app.verify
+docker compose exec postgis psql -U emcode -d emcode -c "SELECT model_version, metrics_json FROM ml_model_metadata"
+```
+
+The initial upgraded batch updates existing seeded records using the stored anchor and does not require deleting the database volumes.

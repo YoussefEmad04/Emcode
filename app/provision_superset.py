@@ -409,6 +409,19 @@ def configure_dashboard(
 
 def main() -> None:
     wait_for_analytics_schema()
+    # Wait for synthetic model results before provisioning the report.
+    conn = connect_with_retry()
+    try:
+        for attempt in range(90):
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT count(*) FROM ml_congestion_predictions WHERE forecast_kind='forecast'")
+                if cursor.fetchone()[0] == 5:
+                    break
+            time.sleep(2)
+        else:
+            raise RuntimeError("Synthetic congestion model did not produce five forecasts")
+    finally:
+        conn.close()
     api = SupersetAPI()
     for attempt in range(1, 61):
         try:
@@ -431,6 +444,9 @@ def main() -> None:
             "v_live_vehicle_latest",
             "v_live_events_recent",
             "v_zone_activity_5m",
+            "v_batch_hourly_zone_activity",
+            "v_ml_congestion_forecast",
+            "v_ml_congestion_holdout",
         )
     }
 
@@ -532,7 +548,7 @@ def main() -> None:
             api,
             historical_id,
             datasets["v_batch_spatial_activity"],
-            "GPS Activity Clusters",
+            "Historical GPS Activity Map",
             "deck_scatter",
             {
                 "spatial": {"type": "latlong", "latCol": "latitude", "lonCol": "longitude"},
@@ -551,7 +567,7 @@ def main() -> None:
                 "multiplier": 1,
                 "color_scheme": "supersetColors",
             },
-            legacy_titles=("Historical | Position Map",),
+            legacy_titles=("Historical | Position Map", "GPS Activity Clusters"),
         ),
         ensure_chart(
             api,
@@ -681,9 +697,31 @@ def main() -> None:
         ),
     ]
     configure_dashboard(api, live_id, live_charts)
+    diagnostic_id = ensure_dashboard(api, "EMCODE | Congestion Diagnostics", "emcode-congestion-diagnostics")
+    diagnostic_charts = [
+        ensure_chart(api, diagnostic_id, datasets["v_ml_congestion_forecast"],
+                     "Next-hour Congestion Risk by Zone", "echarts_timeseries_bar",
+                     {"x_axis": "zone_name", "granularity_sqla": "event_time",
+                      "metrics": [metric("Risk (%)", "MAX(congestion_risk_pct)")],
+                      "orientation": "horizontal", "row_limit": 100,
+                      "show_value": True, "show_legend": False}),
+        ensure_chart(api, diagnostic_id, datasets["v_batch_hourly_zone_activity"],
+                     "Hourly Average Speed by Zone", "echarts_timeseries_line",
+                     {"x_axis": "event_time", "granularity_sqla": "event_time",
+                      "time_grain_sqla": "PT1H", "time_range": "No filter",
+                      "metrics": [metric("Average Speed km/h", "AVG(avg_speed_kph)")],
+                      "groupby": ["zone_name"], "row_limit": 3000, "show_legend": True}),
+        ensure_chart(api, diagnostic_id, datasets["v_ml_congestion_holdout"],
+                     "Test-set Predictions vs Proxy Labels by Zone", "echarts_timeseries_bar",
+                     {"x_axis": "zone_name", "granularity_sqla": "event_time",
+                      "metrics": [metric("Predicted Congested Hours", "SUM(predicted_congested)"),
+                                  metric("Proxy Congested Hours", "SUM(observed_congested)")],
+                      "row_limit": 100, "show_value": True, "show_legend": True}),
+    ]
+    configure_dashboard(api, diagnostic_id, diagnostic_charts)
     print(
-        f"Provisioned 2 dashboards, {len(datasets)} datasets, and "
-        f"{len(historical_kpis) + len(historical_charts) + len(live_charts)} charts",
+        f"Provisioned 3 dashboards, {len(datasets)} datasets, and "
+        f"{len(historical_kpis) + len(historical_charts) + len(live_charts) + len(diagnostic_charts)} charts",
         flush=True,
     )
 
